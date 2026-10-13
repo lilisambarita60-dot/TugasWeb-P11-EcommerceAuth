@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="id"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Tugas Rutin 11 — E-Commerce DB + Secure Auth</title>
+<style>
+:root{--bg:#fff;--fg:#1a1a2e;--mu:#667;--cd:#f4f5fa;--bd:#dde;--ac:#e8391d;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media(prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0b0d17;--fg:#e8e9f5;--mu:#9aa0b8;--cd:#141829;--bd:#2a2f48}}
+:root[data-theme="dark"]{--bg:#0b0d17;--fg:#e8e9f5;--mu:#9aa0b8;--cd:#141829;--bd:#2a2f48}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+body{margin:0 auto;background:var(--bg);color:var(--fg);font:16px/1.5 system-ui,sans-serif;padding:16px;max-width:760px}
+h1{font-size:22px;margin:0 0 4px}h2{font-size:17px;margin:16px 0 8px}
+.sub{color:var(--mu);font-size:14px}
+.tabs{display:flex;gap:6px;flex-wrap:wrap;margin:12px 0}
+button{font:inherit;font-size:14px;padding:8px 12px;border-radius:8px;border:1px solid var(--bd);background:var(--cd);color:var(--fg)}
+button.on,.pri{background:var(--ac);border-color:var(--ac);color:#fff}
+.card{background:var(--cd);border:1px solid var(--bd);border-radius:12px;padding:14px;margin:10px 0}
+.wrap{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:13px}
+th,td{border-bottom:1px solid var(--bd);padding:6px 8px;text-align:left;white-space:nowrap}
+pre{background:var(--bg);border:1px solid var(--bd);border-radius:8px;padding:10px;overflow-x:auto;font-size:12.5px;margin:6px 0}
+code{font-size:12.5px}
+input,select{font:inherit;padding:8px;border-radius:8px;border:1px solid var(--bd);background:var(--bg);color:var(--fg);width:100%;box-sizing:border-box;margin:4px 0}
+.ok{color:#18a058}.no{color:#d33}
+.toast{padding:10px 12px;border-radius:8px;margin:8px 0;font-size:14px;border:1px solid var(--bd)}
+.t403{background:#d3333322;border-color:#d33}.t200{background:#18a05822;border-color:#18a058}
+.row{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
+details{margin:8px 0}summary{font-weight:600;padding:8px 0}
+</style></head><body>
+<h1>📌 Tugas Rutin 11 — E-Commerce DB + Secure Auth</h1>
+<div class="sub">Demo hasil di browser: skema, seeder, Tinker, login multi-role, dan Policy. Kode Laravel ada di tab "Kode".</div>
+<div class="tabs" id="tabs"></div>
+<div id="v"></div>
+
+<script>
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+// ===== Data seeder (deterministik) =====
+const cats=['Elektronik','Fashion','Buku','Olahraga','Rumah'];
+const tags=['baru','diskon','populer','premium'];
+const users=[
+ {id:1,name:'Admin',email:'admin@toko.test',role:'admin'},
+ {id:2,name:'Editor',email:'editor@toko.test',role:'editor'},
+ {id:3,name:'Budi',email:'user@toko.test',role:'user'}];
+const names=['Laptop','Headset','Kaos','Sepatu','Novel','Raket','Lampu','Kursi','Jam','Tas'];
+const products=Array.from({length:50},(_,i)=>({id:i+1,name:names[i%10]+' '+(Math.floor(i/10)+1),category_id:(i%5)+1,user_id:(i%3)+1,price:(25000+((i*37)%90)*5000),stock:5+(i*7)%40,tags:[tags[i%4],tags[(i+1)%4]]}));
+const orders=Array.from({length:12},(_,i)=>({id:i+1,user_id:(i%3)+1,items:[{product_id:(i*3)%50+1,qty:1+i%3},{product_id:(i*5+2)%50+1,qty:1}]}));
+orders.forEach(o=>o.items.forEach(it=>it.price=products[it.product_id-1].price));
+const rp=n=>'Rp '+n.toLocaleString('id-ID');
+const schema={
+ users:['id','name','email','password','role (admin|editor|user)','timestamps'],
+ categories:['id','name','timestamps'],
+ products:['id','category_id → categories (FK)','user_id → users (FK)','name','price decimal(12,2)','stock','timestamps'],
+ orders:['id','user_id → users (FK, cascade)','status','timestamps'],
+ order_items:['id','order_id → orders (FK)','product_id → products (FK)','qty','price decimal(12,2)'],
+ tags:['id','name','timestamps'],
+ product_tag:['product_id → products','tag_id → tags','(pivot)']};
+// ===== Posts untuk Policy =====
+let posts=[{id:1,title:'Tips belanja online',user_id:3},{id:2,title:'Review laptop terbaru',user_id:2},{id:3,title:'Panduan admin toko',user_id:1}];
+let me=null,toast=null,tab='db';
+const can={update:(u,p)=>u.id===p.user_id||u.role==='editor',delete:(u,p)=>u.id===p.user_id||u.role==='admin'};
+// ===== Tinker =====
+const q={
+ 'Product::count()':()=>products.length,
+ "Product::with('category')->first()":()=>{const p=products[0];return `Product { id: ${p.id}, name: "${p.name}", price: ${p.price}, category: Category { name: "${cats[p.category_id-1]}" } }`},
+ 'User::first()->orders->count()':()=>orders.filter(o=>o.user_id===1).length,
+ "Order::withSum('items as total','price')->first()":()=>{const o=orders[0];return `Order { id: ${o.id}, total: ${o.items.reduce((s,i)=>s+i.price,0)} }`},
+ "Product::whereRelation('category','name','Elektronik')->get()":()=>{const r=products.filter(p=>cats[p.category_id-1]==='Elektronik');return `Collection (${r.length} produk): `+r.slice(0,4).map(p=>p.name).join(', ')+'…'}};
+// ===== Views =====
+const tabsDef={db:'1. Skema DB',seed:'2. Seeder',tinker:'3. Tinker',auth:'4. Auth & Policy',code:'Kode'};
+function tbl(h,rows){return `<div class="wrap"><table><tr>${h.map(x=>`<th>${x}</th>`).join('')}</tr>${rows.map(r=>`<tr>${r.map(c=>`<td>${c}</td>`).join('')}</tr>`).join('')}</table></div>`}
+const views={
+ db:()=>`<h2>Bagian A — 7 tabel + FK constraints</h2>`+Object.entries(schema).map(([t,c])=>`<div class="card"><b>${t}</b><br><small>${c.map(esc).join(' · ')}</small></div>`).join('')+`<div class="card"><small>Relasi: Category hasMany Product · Product belongsTo Category/User · Product belongsToMany Tag · Order hasMany OrderItem · User hasMany Order. Scope: <code>scopeInStock()</code></small></div>`,
+ seed:()=>`<h2>Seeder: ${products.length} produk (factory)</h2><div class="sub">${users.length} user · ${cats.length} kategori · ${tags.length} tag · ${orders.length} order</div>`+tbl(['id','nama','kategori','harga','stok','tag'],products.slice(0,12).map(p=>[p.id,esc(p.name),cats[p.category_id-1],rp(p.price),p.stock,p.tags.join(', ')]))+`<div class="sub">Menampilkan 12 dari 50 produk.</div>`,
+ tinker:()=>`<h2>5 query Tinker</h2>`+Object.entries(q).map(([k,f])=>`<div class="card"><pre>&gt;&gt;&gt; ${esc(k)}</pre><pre>= ${esc(f())}</pre></div>`).join(''),
+ auth:()=>{
+  let h=`<h2>Bagian B — Breeze + multi-role</h2>`;
+  if(!me){h+=`<div class="card"><b>Login</b> <small>(password semua akun: password)</small><select id="u">${users.map(u=>`<option value="${u.id}">${u.email} (${u.role})</option>`).join('')}</select><input id="pw" type="password" placeholder="password" value="password"><div class="row"><button class="pri" onclick="login()">Login</button></div><div class="sub">Tanpa login, /dashboard & /admin → redirect ke /login (middleware auth).</div></div>`;}
+  else{
+   h+=`<div class="card">Login sebagai <b>${esc(me.name)}</b> · role <b>${me.role}</b> <button onclick="me=null;toast=null;render()">Logout</button></div>`;
+   h+=`<div class="row"><button onclick="visit('/dashboard')">/dashboard</button><button onclick="visit('/admin')">/admin</button></div>`;
+   h+=`<h2>Posts + PostPolicy</h2>`+posts.map(p=>`<div class="card"><b>${esc(p.title)}</b><div class="sub">penulis: ${esc(users.find(u=>u.id===p.user_id).name)}</div><div class="row"><button onclick="act('update',${p.id})">Edit ${can.update(me,p)?'✓':'🔒'}</button><button onclick="act('delete',${p.id})">Hapus ${can.delete(me,p)?'✓':'🔒'}</button></div></div>`).join('');
+   h+=`<div class="sub">Tombol terkunci hanya UX. Server tetap memeriksa lewat <code>$this->authorize()</code> (klik tombol 🔒 untuk melihat 403).</div>`;
+  }
+  return (toast?`<div class="toast ${toast.c}">${esc(toast.m)}</div>`:'')+h;},
+ code:()=>codeBlocks
+};
+const codeBlocks=[
+['Migration: products',`Schema::create('products', function (Blueprint $t) {
+    $t->id();
+    $t->foreignId('category_id')->constrained()->cascadeOnDelete();
+    $t->foreignId('user_id')->constrained()->cascadeOnDelete();
+    $t->string('name', 200);
+    $t->decimal('price', 12, 2);
+    $t->unsignedInteger('stock')->default(0);
+    $t->timestamps();
+});`],
+['Migration: order_items & pivot',`Schema::create('order_items', function (Blueprint $t) {
+    $t->id();
+    $t->foreignId('order_id')->constrained()->cascadeOnDelete();
+    $t->foreignId('product_id')->constrained()->restrictOnDelete();
+    $t->unsignedInteger('qty');
+    $t->decimal('price', 12, 2);
+});
+Schema::create('product_tag', function (Blueprint $t) {
+    $t->foreignId('product_id')->constrained()->cascadeOnDelete();
+    $t->foreignId('tag_id')->constrained()->cascadeOnDelete();
+    $t->primary(['product_id', 'tag_id']);
+});`],
+['Model Product + scope',`class Product extends Model {
+    protected $fillable = ['category_id','user_id','name','price','stock'];
+    public function category() { return $this->belongsTo(Category::class); }
+    public function user()     { return $this->belongsTo(User::class); }
+    public function tags()     { return $this->belongsToMany(Tag::class); }
+    public function scopeInStock($q) { return $q->where('stock', '>', 0); }
+}`],
+['Factory & Seeder',`// ProductFactory
+return [
+    'name' => fake()->words(2, true),
+    'price' => fake()->numberBetween(25, 500) * 1000,
+    'stock' => fake()->numberBetween(0, 50),
+    'category_id' => Category::factory(),
+    'user_id' => User::factory(),
+];
+// DatabaseSeeder
+User::factory()->count(10)->create();
+Product::factory()->count(50)->create();
+// php artisan migrate:fresh --seed`],
+['Breeze + middleware role',`composer require laravel/breeze --dev
+php artisan breeze:install blade
+php artisan make:migration add_role_to_users_table
+// $t->string('role')->default('user');
+php artisan make:middleware EnsureRole
+
+// EnsureRole.php
+public function handle(Request $r, Closure $next, string $role) {
+    if ($r->user()?->role !== $role) abort(403);
+    return $next($r);
+}
+// bootstrap/app.php
+$m->alias(['role' => EnsureRole::class]);
+// routes/web.php
+Route::middleware(['auth', 'role:admin'])->prefix('admin')
+    ->group(function () { Route::get('/', AdminController::class); });`],
+['PostPolicy',`php artisan make:policy PostPolicy --model=Post
+
+public function update(User $u, Post $p): bool {
+    return $u->id === $p->user_id || $u->role === 'editor';
+}
+public function delete(User $u, Post $p): bool {
+    return $u->id === $p->user_id || $u->role === 'admin';
+}
+// Controller
+$this->authorize('update', $post);
+// Blade
+@can('update', $post) ... @endcan`]];
+// ===== Actions =====
+function login(){const u=users.find(x=>x.id==document.getElementById('u').value);if(document.getElementById('pw').value!=='password'){toast={c:'t403',m:'Password salah.'}}else{me=u;toast={c:'t200',m:'Login berhasil (200). Redirect ke /dashboard.'}}render()}
+function visit(p){toast=(p==='/admin'&&me.role!=='admin')?{c:'t403',m:`GET ${p} → 403 Forbidden (middleware role:admin menolak role "${me.role}")`}:{c:'t200',m:`GET ${p} → 200 OK`};render()}
+function act(a,id){const p=posts.find(x=>x.id===id);if(!can[a](me,p)){toast={c:'t403',m:`${a==='update'?'PUT':'DELETE'} /posts/${id} → 403 Forbidden (PostPolicy@${a} menolak)`}}else{toast={c:'t200',m:`${a==='update'?'PUT':'DELETE'} /posts/${id} → diizinkan (PostPolicy@${a})`};if(a==='delete')posts=posts.filter(x=>x.id!==id)}render()}
+function render(){
+ document.getElementById('tabs').innerHTML=Object.entries(tabsDef).map(([k,l])=>`<button class="${k===tab?'on':''}" onclick="tab='${k}';toast=null;render()">${l}</button>`).join('');
+ const el=document.getElementById('v');
+ if(tab==='code')el.innerHTML=codeBlocks.map(([t,c])=>`<details><summary>${t}</summary><pre>${esc(c)}</pre></details>`).join('')+'<div class="sub">Bonus: <code>composer require filament/filament</code> + <code>bezhansalleh/filament-shield</code>; eager loading: <code>Product::with(\'category\',\'tags\')->get()</code></div>';
+ else el.innerHTML=views[tab]();
+}
+render();
+</script>
+</body></html>
